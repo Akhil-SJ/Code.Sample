@@ -1,0 +1,217 @@
+---
+title: "Assessing popular prediction models on baseball strikeouts- SAMPLE"
+author: "Akhil Jonnalagadda"
+output: pdf_document
+abstract: " "
+---
+# Baseball
+
+Baseball is a sport that has an abundance of metrics that can be assessed from a data mining perspective. As such, modeling the data is a unique and intriguing challenge---is it possible to find a model that most accurately describes the most pertinent metrics for baseball's pitchers and batters? Further, is it  possible to find the traits of the best players by employing statistical modeling techniques?
+
+By breaking down baseball's two most widely discussed positions, we are able to better breakdown trends through analysis of a pitcher's strikeouts (K's) and walks and hits per inning (whip) and a batter's homerun counts.
+
+## Pitching
+
+There are many metrics that define a pitcher. Pitchers need to limit earned runs---this means getting many strikeouts or preventing hits and walks. As such, pitchers with a high count of strikeouts are perceived as better and pitchers with low whips are seen as especially elite. To begin, examination of PCA was utilized to see if it was possible to sort on features to find the best pitchers.
+
+### Principal Components Analysis
+
+PCA on strikeouts per nine innings was the first variable examined. Ideally, it will be possible to distinguish between high and low strikeout counts---if so, there is confidence that principal component analysis works to sort bad pitchers from great pitchers.
+
+```{r pitching_PCA, echo=FALSE, warning=FALSE, message=FALSE}
+library(tidyverse)
+library(mosaic)
+library(ggplot2)
+library(lubridate)
+library(foreach)
+library(LICORS)
+library(randomForest)
+library(rpart)
+library(tree)
+library(MLmetrics)
+library(dplyr)
+library(gamlr)
+library(glmnet)
+library(caret)
+library(readr)
+library(repr)
+library(standardize)
+library(plotmo)
+
+pitching <- read.csv("~/Desktop/R/CleanPitching.csv")
+pitching[is.na(pitching)] <- 0
+
+
+pitch_k = pitching %>%
+  group_by(k_9) %>%
+  select(wpct, era, sv, ip, hr, bb_9, so, tbf, obp, sho, hb, gf) %>%
+  summarize_all(mean)
+
+#STRIKEOUT PCA
+pca_k = prcomp(pitch_k, scale=TRUE)
+plot(pca_k)
+summary(pca_k)
+round(pca_k$rotation[,1:8],2)
+
+k_pc = merge(pitch_k, pca_k$x, by = "row.names")
+k_pc = rename(k_pc, k9 = Row.names)
+
+ggplot(k_pc) +
+  geom_text(aes(x=PC2, y=PC5, label = k_9), size = 2)
+```
+
+The plotted PCA's showcase the graphical significance of each principal component in the whole. Numerically, the summarized principal components describe how much of the data is explained by each, both in cumulative and individually. Following the summary of the significance of each principal component, a generalized breakdown of the impact on each variable is listed.
+
+The PCA of K's per nine innings showcases a high degree of clustering around (0,0) in the axis of (PC2, PC5); however, there is a trend that the best pitchers have PC2 values between -5 and -7.5 while the worst pitchers have PC2 values greater than zero. This isn't a great model since it results in having the highest strikeout count per nine innings (17.36) close to the lowest (0). Despite this, the average great pitcher contains many of the same traits, according to PC2.
+
+Although it is possible to sort (between good and bad pitchers, at least) on strikeouts per nine innings, it isn't very easy to follow due to the cluster in the center, as well as the similar mappings of the best and worst characteristics of pitchers. To get a better feel for whether this is always the case, a pitcher's whip was also assessed using PCA.
+
+```{r whip_pca, echo=FALSE, warning=FALSE, message=FALSE}
+#WHIP PCA
+pitch_whip = pitching %>%
+  group_by(whip) %>%
+  select(wpct, sv, ip, hr, k_9, bb_9, so, tbf, obp, sho, hb, gf, era) %>%
+  summarize_all(mean)
+
+pca_whip = prcomp(pitch_whip, scale=TRUE)
+plot(pca_whip)
+summary(pca_whip)
+round(pca_whip$rotation[,1:7],2)
+
+whip_pc = merge(pitch_whip, pca_whip$x, by = "row.names")
+whip_pc = rename(whip_pc, whip1 = Row.names)
+
+# PC1 v PC2 is the best model, you can look at others but this one is good
+ggplot(whip_pc) +
+  geom_text(aes(x=PC1, y=PC2, label=whip), size = 2)
+```
+
+This graph very clearly lays out the best and worst features from the first two principal components (which comprise 72.68% of the variation in whip). The best---nay, elite---pitchers have whips with values less than one. We clearly see that under these principal components, these kinds of pitchers tend to have PC1 and PC2 values that are negative. Specifically, PC1 on average seems to be around -3 while PC2 is around -2.5. For great pitchers (with whip values less than 1.5), PC1 is in the range [-6, -1.5] and PC2 values are in the range of [-7, 2.5]. When these happen simulataneously, great pitchers are found. 
+
+Clearly it is possible to sort and filter the best traits using PCA, but is it possible to find an accurate model of strikeouts per nine innings predictions? To do this, rather than running a simple OLS linear model, random forests allow for the aggregation of important traits to predicting outcomes.
+
+### Random Forest
+
+Random forests are resourceful for aggregating many trees to develop a best model. To best understand how this is done, an initial tree can be examined.  
+
+#### Tree
+```{r pitching_tree, echo=FALSE, warning=FALSE, message=FALSE}
+
+### Random Forests
+n = nrow(pitching)
+n_train = round(0.8*n)
+n_test = n - n_train
+train_cases = sample.int(n, n_train, replace=FALSE)
+test_cases = setdiff(1:n, train_cases)
+pitch_train = pitching[train_cases,]
+pitch_test = pitching[test_cases,]
+
+pitch_tree = rpart(k_9 ~ wpct + sv + ip + hr + whip + bb_9 + so +
+                     tbf + obp + sho + hb + gf + era, method="anova", data=pitch_train,
+                  control=rpart.control(minsplit=3, cp=1e-6, xval=20))
+npitch = length(unique(pitch_tree$where))
+# look at the cross-validated error
+plot(pitch_tree)
+yhat_test_tree1 = predict(pitch_tree, pitch_test)
+mean((yhat_test_tree1 - pitch_test$k_9)^2) %>% sqrt
+```
+
+This tree is just one possibility of how the data of pitchers could be presented and sorted. When aggregated 500 times, the best outcomes are given more significance which results in a best model. This process creates a `random forest' wherein the model is able to be estimated through every tree produced. The RMSE for the single tree is around 0.45. Pruning the tree could produce an even better RMSE; however, a random forest should generate a better model.
+
+```{r pithcing_rf, echo=FALSE, warning=FALSE, message=FALSE}
+rf <- randomForest(k_9 ~ wpct + sv + ip + hr + whip + bb_9 + so +
+                     tbf + obp + sho + hb + gf + era, data = pitch_train)
+
+
+yhat_test_rf = predict(rf, pitch_test)
+plot(predict(rf), pitch_train$k_9)
+mean((yhat_test_rf - pitch_test$k_9)^2) %>% sqrt
+RMSE.RF= mean((yhat_test_rf - pitch_test$k_9)^2) %>% sqrt
+```
+
+Interestingly, the RMSE does not lower from the single tree but rather increases. This is disappointing, but because the model accounts for more variation, the argument can be made that it accounts for more randomness and thus is the better model. Unfortuantely, this is a weak argument.
+
+The point stands that a very good model can be generated from the tree and random forest method---one even better than standard OLS regression.
+
+### Lasso Selection and OLS
+```{r lasso, echo=FALSE, warning=FALSE, message=FALSE}
+
+#### fix data
+C1= read.csv("~/Desktop/R/CleanPitching.csv")
+## rm ATL 
+C1 <- C1[C1$team != "ATL", ]
+### fit missiing with 0
+C1[is.na(C1)] <- 0
+C1=subset(C1, select = -c(X,Unnamed..0,player,name,position,year,team,k_9,bk))
+C2=C1
+##create a sparse matrix
+c = sparse.model.matrix(so~ ., data=C1)[,-1]
+y= na.omit(C1$so)
+#### train sets
+train=sample(1: nrow(c), nrow(c)/2)
+test=(-train)
+y.test=y[test]
+grid = 10^ seq(10,-2, length = 100)
+lasso= glmnet(c[train,],y[train],alpha=1,lambda = grid, standardize = TRUE )
+cv.out = cv.glmnet(c[train,],y[train],alpha=1,standardize = TRUE )
+lambda= cv.out$lambda.min
+l.predict= predict(lasso,s=lambda, newx = c[test,])                   
+RSME.Lasso= sqrt(mean((l.predict-y.test)^2))
+out= glmnet(c[test,],y[test],alpha=1,lambda=grid)
+lasso.co= predict(out,type = "coefficients",s=lambda)[1:38,]
+lasso.co[lasso.co !=0]
+line = (log(lambda))
+line
+lambda
+## ols of selceted
+fit= lm(so~wins+losses+era+g+gs+svo+h+r+er+whip+er+hr+bb+avg+cg+sho+hb+ibb+gf+hl+gidp+go+ao+wp+sb+cs+tbf+np+go_ao+obp+slg+h_9+ops+p_ip+wpct, data = C1)
+fitp=predict(fit)
+RSME.OLS= sqrt(mean((C1$so-fitp)^2))
+#### wrong OLS fit
+lin = lm(so~ ., data = C2[train,])
+linp = predict(lin, data= C2[test,])
+RSME.wrong= sqrt(mean((C1$so-linp)^2))
+###graph
+glmcoef<-coef(lasso,lambda)
+coef.increase<-dimnames(glmcoef[glmcoef[,1]>0,0])[[1]]
+coef.decrease<-dimnames(glmcoef[glmcoef[,1]<0,0])[[1]]
+#get ordered list of variables as they appear at smallest lambda
+allnames<-names(coef(lasso)[,
+                          ncol(coef(lasso))][order(coef(lasso)[,
+                                                           ncol(coef(lasso))],decreasing=TRUE)])
+#remove intercept
+allnames<-setdiff(allnames,allnames[grep("Intercept",allnames)])
+#assign colors
+cols<-rep("gray",length(allnames))
+cols[allnames %in% coef.increase]<-"green"      # higher mpg is good
+cols[allnames %in% coef.decrease]<-"red"        # lower mpg is not
+```
+
+Here we are looking at creating a model to predict strikeouts. Simply put the goal of a pitcher is to strike the batter out in baseball. Modeling this is useful for teams to understand a pitchers ability to do their job.
+
+Before any analysis we had to clean and address the data. This included removing all categorical variables and non trend specific data such as ID numbers. After this all metrics using strikeouts in their calculations were removed. The remaining variables for these models included those such as home runs, sv(pitcher ending a wining game), and an assortment of others.
+
+The first method used was a LASSO(least absolute shrinkage and selection operator) to predict strikeouts. First we had to create training data and testing data. Using an 80/20 split on our sample that was done. The next part of this method including creating a matrix of all variable combinations and using a feature section method to choose the most significant variables to use in our analysis. This part also included finding the optimal "lambda" our penalty vector in this regression.
+
+```{r pressure, echo=FALSE, warning=FALSE, message=FALSE}
+l.plot= plot(log(cv.out$lambda), cv.out$cvm , main = "MSE vs Lambda", ylab="MSE", xlab="Log(Lambda)",xlim=c(-7,7))
+abline(v= line, col="purple")
+text(xy.coords(-1.5, 2000),labels= c("Minimum Lambda"))
+```
+
+In this graph we see across these lambda values we plot the variables we selected and their respective coefficients. As not all metrics are the same we highlighted the 5 most significant according to our section model. The red being for negative impact and green for postie. OPS, the players on base and slugging average is the most significant positive variable and batting average being the most negative significant variable. 
+
+```{r pressure2, echo=FALSE, warning=FALSE, message=FALSE}
+plot2 = plot_glmnet(lasso,label=5,s=lambda,col=cols, main = "Variable Significance Chart")
+```
+
+The next part of this method was to lock down the lambda. This was done by plotting the mean squared error and a series of lambda values to find the lowest mean squared error. As seen about the lambda was .0044845 or 5.407 in absolute value logarithmic form. 
+
+Using these variables and lambda we can compute our LASSO regression. Using this model and the test data we compare our predictions to our actual outcomes to find out error rate. The root squared mean error(RSME) was 15.46 for this model. Considering that the min/max of strikeouts is 0/372 this is an understandable error rate. 
+
+For a comparison of another regression technique we used our selected variables in an ordinary least squares(OLS). Using the same prediction procedure we calculated a 15.10375 RSME. Again a fair error rate for the model and very similar to our LASSO regression error.
+
+While these regressions seem to be doing a decent job at estimating strikeouts we need to compare against some standard to understand that its a "better" method in some sense. The simplest way was to run OLS with all variables(post data clean). OLS is the simplest regression technique and the go to in most economists toolbox. Running the prediction and comparing to our test sample we had a RSME of 69.4515. Which is far worse than our past error rates. Now this begs the question of why OLS is so much worse without feature section. Simply put is that OLS without section control will over fit the model. Our in sample error rate was 14.92575 which is the best error rate of this group of models. In practice(test data) we see this does not hold as we over fit our model. Some variables had more influence than they should have creating increased error rates. The section method in our LASSO then OLS avoids this issue. In summary, these methods are "better" than our dry cut OLS.  
+
+
+
